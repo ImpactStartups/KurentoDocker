@@ -1,0 +1,162 @@
+#!/bin/bash
+
+if [[ $EUID -ne 0 ]]; then
+   echo "$(basename "$0") error: this script must be run as root" 1>&2
+   exit 1
+fi
+
+
+show_help() {
+cat << EOF
+$(basename "$0") [-sA] [-sP] [-t]
+
+where:
+    -sA  set the address of the STUN server (e.g. 127.0.0.1). If this is set, also -sP has to be set.
+    -sP  set the port of the STUN server (e.g. 3478). If this is set, also -sA has to be set.
+    -t   set the address and the port of the TURN server in the form of user:password@address:port(?transport=[udp|tcp|tls]).
+EOF
+}
+
+
+eval_config_file() {
+    local _stunServerAddress="$1"
+    local _stunServerPort="$2"
+    local _turnURL="$3"
+
+    echo "
+    {
+      \"mediaServer\" : {
+        \"net\" : {
+          // Uncomment just one of them
+          /*
+          \"rabbitmq\": {
+            \"address\" : \"127.0.0.1\",
+            \"port\" : 5672,
+            \"username\" : \"guest\",
+            \"password\" : \"guest\",
+            \"vhost\" : \"/\"
+          }
+          */
+          \"websocket\": {
+            \"port\": 8888,
+            //\"secure\": {
+            //  \"port\": 8433,
+            //  \"certificate\": \"defaultCertificate.pem\",
+            //  \"password\": \"\"
+            //},
+            \"path\": \"kurento\",
+            \"threads\": 10
+          }
+        }
+      },
+      \"modules\": {
+        \"kurento\": {
+          \"SdpEndpoint\" : {
+            \"sdpPattern\" : \"sdp_pattern.txt\"
+          },
+          \"HttpEndpoint\" : {
+            // \"serverAddress\" : \"localhost\",
+            /*
+              Announced IP Addess may be helpful under situations such as the server needs
+              to provide URLs to clients whose host name is different from the one the
+              server is listening in. If this option is not provided, http server will try
+              to look for any available address in your system.
+            */
+            //\"announcedAddress\" : \"130.206.82.56\"
+          },
+          \"WebRtcEndpoint\" : {
+            $_stunServerAddress,
+            $_stunServerPort,
+            // turnURL gives the necessary info to configure TURN for WebRTC.
+            //    'address' must be an IP (not a domain).
+            //    'transport' is optional (UDP by default).
+            $_turnURL,
+            // \"pemCertificate\" : \"file\",
+            \"\" : \"\"
+          },
+          \"PlumberEndpoint\" : {
+            // \"bindAddress\" : \"localhost\",
+            /*
+              Announced IP Address may be helpful under situations such as the endpoint needs
+              to provide an IP address to clients whose host name is different from the one
+              that the element is listening in. If this option is not provided, the bindAddress
+              will be used instead.
+            */
+            //\"announcedAddress\" : \"130.206.82.56\"
+          }
+        }
+        //\"module1\": { …. }
+        //\"module2\": { …. }
+      }
+    }
+    ";
+}
+
+
+init() {
+    service kurento-media-server start
+    tail -F /var/log/kurento-media-server/media-server.log
+}
+
+KURENTO_CONFIG_PATH="/etc/kurento/kurento.conf.json"
+
+if [[ $# -eq 0 ]]; then
+    if [[ ! -f $KURENTO_CONFIG_PATH ]]; then
+        echo "No configuration file found in $KURENTO_CONFIG_PATH"
+    else
+        echo "No arguments provided. Using the configuration found in $KURENTO_CONFIG_PATH"
+        init
+    fi
+    exit
+fi
+
+STUN_SERVER_ADDRESS="// \"stunServerAddress\" : \"stun ip address\""
+STUN_SERVER_PORT="// \"stunServerPort\" : 3478"
+TURN_URL="// \"turnURL\" : \"user:password@address:port(?transport=[udp|tcp|tls])\""
+
+STUN_SERVER_ADDRESS_MODIFIED=0
+STUN_SERVER_PORT_MODIFIED=0
+
+while [[ $# > 1 ]]; do
+    key="$1"
+
+    case $key in
+        -sA)
+            STUN_SERVER_ADDRESS="\"stunServerAddress\" : \"$2\""
+            STUN_SERVER_ADDRESS_MODIFIED=1
+            shift
+            ;;
+        -sP)
+            STUN_SERVER_PORT="\"stunServerPort\" : $2"
+            STUN_SERVER_PORT_MODIFIED=1
+            shift
+            ;;
+        -t)
+            TURN_URL="\"turnURL\" : \"$2\""
+            shift
+            ;;
+        *)
+            echo "Invalid argument $1"
+            show_help
+            exit
+            ;;
+    esac
+    shift
+done
+
+if (( $STUN_SERVER_ADDRESS_MODIFIED ^ $STUN_SERVER_PORT_MODIFIED )); then
+    echo "If -sA is set, you have to set -sP too and vice versa."
+    exit
+fi
+
+CONFIG_FILE=$(eval_config_file "$STUN_SERVER_ADDRESS" "$STUN_SERVER_PORT" "$TURN_URL")
+echo "${CONFIG_FILE}" > /etc/kurento/kurento.conf.json
+
+echo "Going to initialize with:"
+echo "$STUN_SERVER_ADDRESS"
+echo "$STUN_SERVER_PORT"
+echo "$TURN_URL"
+
+init
+
+# End of file
